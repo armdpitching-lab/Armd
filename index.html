@@ -1,17 +1,933 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#07070F" />
-    <meta name="description" content="ARM'D — Book live at-bats against ex-college and pro pitchers. Built for travel teams, high school programs, college rosters, and individual athletes." />
-    <meta property="og:title" content="ARM'D — Live Pitching On Demand" />
-    <meta property="og:description" content="Book live at-bats against ex-college and pro pitchers." />
-    <meta property="og:type" content="website" />
-    <title>ARM'D — Live Pitching On Demand</title>
-  </head>
-  <body>
-    <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root"></div>
-  </body>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="theme-color" content="#07070F"/>
+  <meta name="description" content="ARM'D — Book live at-bats against a professional pitcher."/>
+  <meta property="og:title" content="ARM'D — Live Pitching On Demand"/>
+  <meta property="og:description" content="Book live at-bats against ex-college and pro pitchers."/>
+  <title>ARM'D — Live Pitching On Demand</title>
+  <!-- React -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel (JSX transform) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Stripe -->
+  <script src="https://js.stripe.com/v3/"></script>
+  <!-- Config: swap these values once you have Stripe -->
+  <script>
+    window.ARMD_STRIPE_KEY   = "pk_test_placeholder";
+    window.ARMD_STRIPE_PRICE = "price_placeholder";
+  </script>
+</head>
+<body style="margin:0;padding:0;background:#07070F">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    /* ── FORMSPREE ENDPOINTS ── */
+    const FORMSPREE_BOOKING = "https://formspree.io/f/xwvzyybg";
+    const FORMSPREE_PITCHER = "https://formspree.io/f/xnjrwwzn";
+
+
+/* ── STRIPE SETUP ─────────────────────────────────────────────── */
+// Replace with your Stripe publishable key in .env.local
+const stripePromise = window.Stripe ? window.Stripe(window.ARMD_STRIPE_KEY || "pk_test_placeholder") : null;
+
+/* ── FORMSPREE ENDPOINTS ──────────────────────────────────────── */
+const FORMSPREE_BOOKING = `https://formspree.io/f/${"xwvzyybg"}`;
+const FORMSPREE_PITCHER = `https://formspree.io/f/${"xnjrwwzn"}`;
+
+/* ── DATA ─────────────────────────────────────────────────────── */
+const PITCHERS = [
+  {
+    id: 1, initials: "LC", accent: "#C8102E",
+    name: "Logan Campbell", hand: "RHP",
+    bg: "Professional · Minnesota Twins / Cincinnati Reds",
+    velo: "88–94",
+    pitches: ["Fastball", "Sinker", "Slider", "Curveball"],
+    bio: "Professional right-hander with org experience in the Twins and Reds systems. Four-pitch mix with the command and competition reps to challenge hitters at any level.",
+    avail: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+  },
+];
+
+const SESSIONS = [
+  { id: "private", label: "Private",     sub: "1 hitter",        desc: "60–75 pitches",          price: 200, perLabel: "flat rate" },
+  { id: "group",   label: "Small Group", sub: "2–4 hitters",     desc: "30–40 pitches each",     price: 85,  perLabel: "per hitter" },
+  { id: "team",    label: "Team",        sub: "Up to 12 hitters", desc: "15–20 pitches each",    price: 50,  perLabel: "per hitter · min $500" },
+];
+
+const ADDONS = [
+  { id: "debrief", icon: "🎯", label: "Pitcher Debrief",    price: 75,  bundle: false, desc: "Logan breaks down every hitter — tendencies, strengths, and what they showed." },
+  { id: "video",   icon: "🎬", label: "Recruiting Video",   price: 200, bundle: false, desc: "Full media setup. Live AB footage shot and edited into a recruiting highlight, delivered same day." },
+  { id: "tech",    icon: "📡", label: "HitTrax / Rapsodo",  price: 100, bundle: false, desc: "Exit velocity, launch angle, spin rate, and zone data tracked for every pitch." },
+  { id: "elite",   icon: "⚡", label: "Full Elite Bundle",  price: 325, bundle: true,  desc: "Everything — Debrief + Recruiting Video + HitTrax/Rapsodo. All three bundled, saves you $50.", saves: 50 },
+];
+
+const DAYS  = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const TIMES = ["7:00 AM","8:00 AM","9:00 AM","10:00 AM","11:00 AM","1:00 PM","2:00 PM","3:00 PM","4:00 PM","5:00 PM","6:00 PM"];
+const WHO   = [
+  { id: "parent",  icon: "👨‍👩‍👦", label: "Parent",       sub: "Booking for my athlete" },
+  { id: "athlete", icon: "⚾",    label: "Athlete",      sub: "Booking for myself" },
+  { id: "coach",   icon: "📋",    label: "Coach / Team", sub: "Booking for my program" },
+];
+
+const fmt = n => `$${n.toLocaleString()}`;
+
+function calcTotal(session, addons, players) {
+  if (!session) return 0;
+  const h = Math.max(1, parseInt(players) || 1);
+  let base = session.id === "private" ? session.price : session.price * h;
+  if (session.id === "team" && base < 500) base = 500;
+  return base + addons.reduce((s, id) => {
+    const a = ADDONS.find(x => x.id === id);
+    return s + (a ? a.price : 0);
+  }, 0);
+}
+
+/* ── STYLES ───────────────────────────────────────────────────── */
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@300;400;500;600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --red:#C8102E;--red2:#E8182A;
+  --bg:#07070F;--bg2:#0E0E1C;--bg3:#15152A;
+  --ink:#EDE8DF;--ink2:rgba(237,232,223,.55);--ink3:rgba(237,232,223,.22);
+  --bdr:rgba(237,232,223,.08);
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:'Barlow',sans-serif;overflow-x:hidden}
+.bb{font-family:'Bebas Neue',sans-serif;letter-spacing:.05em}
+.nav{position:fixed;top:0;left:0;right:0;z-index:999;display:flex;align-items:center;
+  justify-content:space-between;padding:18px 40px;
+  background:rgba(7,7,15,.92);backdrop-filter:blur(18px);
+  border-bottom:1px solid var(--bdr)}
+.nbadge{width:34px;height:34px;background:var(--red);display:flex;align-items:center;
+  justify-content:center;clip-path:polygon(7px 0%,100% 0%,calc(100% - 7px) 100%,0% 100%)}
+.nlinks{display:flex;gap:32px;align-items:center}
+.nl{background:none;border:none;cursor:pointer;color:var(--ink2);font-family:'Barlow',sans-serif;
+  font-size:12px;letter-spacing:2px;text-transform:uppercase;transition:color .2s;padding:4px 0}
+.nl:hover{color:var(--ink)}
+.btn{background:var(--red);color:#fff;border:none;cursor:pointer;
+  font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:2px;padding:14px 38px;
+  clip-path:polygon(10px 0%,100% 0%,calc(100% - 10px) 100%,0% 100%);
+  transition:background .2s,transform .15s}
+.btn:hover{background:var(--red2);transform:translateY(-1px)}
+.btn:disabled{opacity:.32;cursor:not-allowed;transform:none}
+.btng{background:transparent;color:var(--ink);border:1px solid var(--ink3);cursor:pointer;
+  font-family:'Barlow',sans-serif;font-size:13px;letter-spacing:1.5px;text-transform:uppercase;
+  padding:13px 30px;transition:border-color .2s,background .2s}
+.btng:hover{border-color:var(--ink2);background:rgba(237,232,223,.04)}
+.card{background:var(--bg2);border:1px solid var(--bdr);transition:border-color .25s;cursor:pointer}
+.card:hover{border-color:rgba(237,232,223,.2)}
+.card.sel{border-color:var(--red)!important;background:rgba(200,16,46,.06)!important}
+.chip{display:inline-block;background:rgba(237,232,223,.07);font-family:'Barlow',sans-serif;
+  font-size:11px;letter-spacing:1.5px;text-transform:uppercase;padding:4px 12px;color:var(--ink2)}
+.dchip,.tchip{background:var(--bg3);border:1px solid var(--bdr);font-family:'Barlow',sans-serif;
+  font-size:12px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;color:var(--ink);
+  transition:all .2s;padding:10px 14px;text-align:center;min-width:46px}
+.dchip.sel,.tchip.sel{background:var(--red);border-color:var(--red)}
+.dchip.off,.tchip.off{opacity:.2;cursor:not-allowed}
+.fi{background:var(--bg3);border:1px solid var(--bdr);color:var(--ink);
+  font-family:'Barlow',sans-serif;font-size:14px;padding:14px 16px;width:100%;
+  outline:none;transition:border-color .2s}
+.fi:focus{border-color:rgba(237,232,223,.35)}
+.fi::placeholder{color:var(--ink3)}
+.fl{display:block;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--ink3);margin-bottom:7px}
+.sbar{display:flex;gap:5px;margin-bottom:40px}
+.sseg{height:3px;flex:1;background:var(--bdr);transition:background .35s}
+.sseg.on{background:var(--red)}
+.ao{background:var(--bg2);border:1px solid var(--bdr);padding:22px 24px;cursor:pointer;
+  transition:all .2s;user-select:none}
+.ao:hover{border-color:rgba(237,232,223,.2)}
+.ao.sel{border-color:var(--red);background:rgba(200,16,46,.06)}
+.aocheck{width:22px;height:22px;border:2px solid var(--ink3);display:flex;align-items:center;
+  justify-content:center;flex-shrink:0;transition:all .2s}
+.ao.sel .aocheck{background:var(--red);border-color:var(--red)}
+.sbox{background:var(--bg3);border:1px solid var(--bdr);padding:22px 26px}
+.fu{opacity:0;transform:translateY(24px);transition:opacity .65s ease,transform .65s ease}
+.fu.vis{opacity:1;transform:none}
+.err{color:#ff6b6b;font-size:13px;margin-top:8px;font-family:'Barlow',sans-serif}
+.spinner{width:20px;height:20px;border:2px solid rgba(255,255,255,.3);
+  border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;margin-right:10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.alert{padding:16px 20px;font-family:'Barlow',sans-serif;font-size:14px;margin-bottom:20px}
+.alert-err{background:rgba(255,107,107,.1);border:1px solid rgba(255,107,107,.3);color:#ff9999}
+.alert-ok{background:rgba(13,122,95,.1);border:1px solid rgba(13,122,95,.3);color:#4ecba5}
+@media(max-width:640px){
+  .nav{padding:16px 20px}
+  .nlinks .nl{display:none}
+}
+`;
+
+/* ── FADE HOOK ────────────────────────────────────────────────── */
+function useFade() {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) el.classList.add("vis"); }, { threshold: 0.1 });
+    obs.observe(el); return () => obs.disconnect();
+  }, []);
+  return ref;
+}
+
+/* ── ROOT ─────────────────────────────────────────────────────── */
+function App() {
+  const [page, setPage] = useState("home");
+  const [bk, setBk]     = useState(freshBooking());
+
+  function freshBooking() {
+    return { step:1, who:null, pitcher:null, session:null, addons:[], day:null, time:null, players:"1", form:{name:"",email:"",phone:"",org:"",notes:""}, done:false };
+  }
+
+  const go = p => { setPage(p); window.scrollTo(0,0); };
+  const openBook = () => { setBk(freshBooking()); go("book"); };
+
+  return (
+    <>
+      <style>{CSS}</style>
+      <NavBar go={go} openBook={openBook} />
+      {page === "home"    && <Home    go={go} openBook={openBook} />}
+      {page === "roster"  && <RosterPage openBook={openBook} />}
+      {page === "how"     && <HowPage openBook={openBook} />}
+      {page === "pricing" && <PricingPage openBook={openBook} />}
+      {page === "book"    && <BookPage bk={bk} setBk={setBk} go={go} freshBooking={freshBooking} />}
+      {page === "join"    && <JoinPage go={go} />}
+    </>
+  );
+}
+
+/* ── NAV ──────────────────────────────────────────────────────── */
+function NavBar({ go, openBook }) {
+  return (
+    <nav className="nav">
+      <button style={{background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:12,color:"var(--ink)"}} onClick={() => go("home")}>
+        <div className="nbadge"><span className="bb" style={{fontSize:17,color:"#fff"}}>A</span></div>
+        <span className="bb" style={{fontSize:24,letterSpacing:4}}>ARM'D</span>
+      </button>
+      <div className="nlinks">
+        <button className="nl" onClick={() => go("how")}>How It Works</button>
+        <button className="nl" onClick={() => go("roster")}>Pitchers</button>
+        <button className="nl" onClick={() => go("pricing")}>Pricing</button>
+        <button className="nl" onClick={() => go("join")}>Join as Pitcher</button>
+        <button className="btn" style={{fontSize:15,padding:"12px 28px"}} onClick={openBook}>Book Now</button>
+      </div>
+    </nav>
+  );
+}
+
+/* ── HOME ─────────────────────────────────────────────────────── */
+function Home({ go, openBook }) {
+  return (
+    <div>
+      {/* HERO */}
+      <section style={{minHeight:"100vh",display:"flex",alignItems:"center",padding:"130px 40px 80px",position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",inset:0,background:"radial-gradient(ellipse 55% 65% at 68% 45%,rgba(200,16,46,.07) 0%,transparent 70%)"}}/>
+        <div style={{position:"absolute",inset:0,backgroundImage:"repeating-linear-gradient(0deg,transparent,transparent 59px,rgba(237,232,223,.022) 60px),repeating-linear-gradient(90deg,transparent,transparent 59px,rgba(237,232,223,.022) 60px)"}}/>
+        <div className="bb" style={{position:"absolute",right:"-2%",top:"4%",fontSize:"clamp(180px,28vw,340px)",lineHeight:.82,color:"transparent",WebkitTextStroke:"1.5px rgba(237,232,223,.035)",pointerEvents:"none",userSelect:"none",letterSpacing:6}}>ARM'D</div>
+        <div style={{maxWidth:1100,margin:"0 auto",width:"100%",position:"relative"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:36}}>
+            <div style={{width:32,height:2,background:"var(--red)"}}/>
+            <span style={{fontSize:11,letterSpacing:3,textTransform:"uppercase",color:"var(--ink2)"}}>Live Pitching · On Demand</span>
+          </div>
+          <h1 className="bb" style={{fontSize:"clamp(76px,13vw,165px)",lineHeight:.88,letterSpacing:4,marginBottom:4}}>REAL</h1>
+          <h1 className="bb" style={{fontSize:"clamp(76px,13vw,165px)",lineHeight:.88,letterSpacing:4,color:"var(--red)",marginBottom:4}}>ARMS.</h1>
+          <h1 className="bb" style={{fontSize:"clamp(76px,13vw,165px)",lineHeight:.88,letterSpacing:4,color:"transparent",WebkitTextStroke:"2px rgba(237,232,223,.16)",marginBottom:52}}>REAL ABs.</h1>
+          <p style={{fontSize:18,lineHeight:1.78,color:"var(--ink2)",maxWidth:500,marginBottom:48,fontWeight:300}}>
+            Book live at-bats against a professional pitcher. Built for travel teams, high school programs, college rosters, and individual athletes who want real competition — not a machine.
+          </p>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+            <button className="btn" style={{fontSize:20}} onClick={openBook}>Book a Session</button>
+            <button className="btng" onClick={() => go("pricing")}>View Pricing</button>
+          </div>
+        </div>
+      </section>
+
+      {/* STATS */}
+      <div style={{background:"var(--bg2)",borderTop:"1px solid var(--bdr)",borderBottom:"1px solid var(--bdr)",padding:"44px 40px"}}>
+        <div style={{maxWidth:960,margin:"0 auto",display:"flex",gap:40,justifyContent:"center",flexWrap:"wrap"}}>
+          {[{n:"Pro",l:"Level Experience"},{n:"88–94",l:"MPH Velocity"},{n:"4",l:"Pitch Arsenal"},{n:"$200",l:"Starting Price"}].map(s=>(
+            <div key={s.l} style={{textAlign:"center",minWidth:140}}>
+              <div className="bb" style={{fontSize:52,color:"var(--red)",letterSpacing:2}}>{s.n}</div>
+              <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"var(--ink3)",marginTop:4}}>{s.l}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* WHO IT'S FOR */}
+      <WhoFor />
+
+      {/* PITCHER PREVIEW */}
+      <section style={{padding:"0 40px 100px",maxWidth:1100,margin:"0 auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:40,flexWrap:"wrap",gap:16}}>
+          <div>
+            <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+            <h2 className="bb" style={{fontSize:52,letterSpacing:3}}>The Arm</h2>
+          </div>
+          <button className="btng" onClick={() => openBook()}>Book a Session →</button>
+        </div>
+        <div style={{maxWidth:480}}>
+          {PITCHERS.map(p => <PCard key={p.id} p={p} openBook={openBook} />)}
+        </div>
+      </section>
+
+      {/* JOIN PITCHER CTA */}
+      <section style={{background:"var(--bg2)",borderTop:"1px solid var(--bdr)",borderBottom:"1px solid var(--bdr)",padding:"64px 40px"}}>
+        <div style={{maxWidth:1100,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:32}}>
+          <div>
+            <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+            <h2 className="bb" style={{fontSize:42,letterSpacing:3,marginBottom:10}}>Are You a Pitcher?</h2>
+            <p style={{color:"var(--ink2)",fontSize:16,maxWidth:480,fontWeight:300,lineHeight:1.75}}>
+              We're building our roster. If you've got pro or college experience and want to get paid throwing live — apply to join ARM'D.
+            </p>
+          </div>
+          <button className="btng" style={{whiteSpace:"nowrap",fontSize:15}} onClick={() => go("join")}>Apply to Join →</button>
+        </div>
+      </section>
+
+      {/* PRICING PREVIEW */}
+      <section style={{padding:"80px 40px"}}>
+        <div style={{maxWidth:1100,margin:"0 auto"}}>
+          <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+          <h2 className="bb" style={{fontSize:52,letterSpacing:3,marginBottom:48}}>Simple Pricing</h2>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:16,marginBottom:32}}>
+            {SESSIONS.map(s=>(
+              <div key={s.id} style={{background:"var(--bg2)",border:"1px solid var(--bdr)",padding:"28px 24px"}}>
+                <div className="bb" style={{fontSize:28,letterSpacing:2,marginBottom:6}}>{s.label}</div>
+                <div style={{fontSize:13,color:"var(--ink2)",marginBottom:20,fontWeight:300}}>{s.sub} · {s.desc}</div>
+                <div style={{display:"flex",alignItems:"baseline",gap:8}}>
+                  <span className="bb" style={{fontSize:50,color:"var(--red)"}}>{fmt(s.price)}</span>
+                  <span style={{fontSize:12,color:"var(--ink3)"}}>{s.perLabel}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",padding:"26px 32px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:16}}>
+            <div>
+              <div className="bb" style={{fontSize:22,letterSpacing:2,marginBottom:6}}>Power up with Add-Ons</div>
+              <div style={{fontSize:13,color:"var(--ink2)",fontWeight:300}}>Debrief · Recruiting Video · HitTrax/Rapsodo · Full Elite Bundle (save $50)</div>
+            </div>
+            <button className="btn" onClick={() => go("pricing")} style={{fontSize:16}}>See All Packages</button>
+          </div>
+        </div>
+      </section>
+
+      {/* CTA BANNER */}
+      <section style={{margin:"0 40px 80px",background:"var(--red)",padding:"64px 48px",position:"relative",overflow:"hidden"}}>
+        <div className="bb" style={{position:"absolute",right:"-2%",top:"-18%",fontSize:"clamp(160px,22vw,260px)",color:"rgba(0,0,0,.12)",pointerEvents:"none",letterSpacing:4}}>AB</div>
+        <div style={{position:"relative"}}>
+          <h2 className="bb" style={{fontSize:"clamp(36px,6vw,58px)",letterSpacing:3,color:"#fff",marginBottom:14}}>Ready to step in the box?</h2>
+          <p style={{color:"rgba(255,255,255,.82)",fontSize:16,marginBottom:32,maxWidth:440,fontWeight:300}}>Sessions fill up fast. Pick your add-ons, pick your time — and get your swings in.</p>
+          <button onClick={openBook} style={{background:"#fff",color:"var(--red)",border:"none",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,padding:"15px 40px",cursor:"pointer",clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)"}}>Book Now</button>
+        </div>
+      </section>
+
+      <Footer />
+    </div>
+  );
+}
+
+function WhoFor() {
+  const ref = useFade();
+  const cards = [
+    {icon:"⚾",c:"#C8102E",t:"Travel Ball Teams",    d:"Get your whole lineup live reps before a tournament. Book a team session and rotate hitters through a real arm."},
+    {icon:"🏫",c:"#1A6FBF",t:"High School Programs", d:"Give your hitters competition they can't get in practice. A pitcher who actually challenges them."},
+    {icon:"🎓",c:"#D4870A",t:"College Rosters",      d:"Prep for the season. Get your lineup timing down against professional-level velocity and movement."},
+    {icon:"👤",c:"#0D7A5F",t:"Individual Athletes",  d:"Private sessions with 60–75 pitches. Add a recruiting video, HitTrax data, or a full pitcher debrief."},
+  ];
+  return (
+    <section ref={ref} className="fu" style={{padding:"100px 40px",maxWidth:1100,margin:"0 auto"}}>
+      <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+      <h2 className="bb" style={{fontSize:52,letterSpacing:3,marginBottom:10}}>Who It's For</h2>
+      <p style={{color:"var(--ink2)",marginBottom:56,fontSize:16,fontWeight:300}}>Whether you're a parent, a coach, or the athlete — ARM'D was built for you.</p>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:2}}>
+        {cards.map(c=>(
+          <div key={c.t} style={{background:"var(--bg2)",border:"1px solid var(--bdr)",padding:"36px 28px"}}>
+            <div style={{fontSize:34,marginBottom:20}}>{c.icon}</div>
+            <h3 className="bb" style={{fontSize:24,letterSpacing:2,color:c.c,marginBottom:10}}>{c.t}</h3>
+            <p style={{fontSize:14,lineHeight:1.78,color:"var(--ink2)",fontWeight:300}}>{c.d}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ── PITCHER CARD ─────────────────────────────────────────────── */
+function PCard({ p, compact, openBook }) {
+  return (
+    <div className="card" style={{padding:compact?22:32}} onClick={openBook}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18}}>
+        <div style={{width:56,height:56,background:p.accent,display:"flex",alignItems:"center",justifyContent:"center",clipPath:"polygon(10px 0%,100% 0%,calc(100% - 10px) 100%,0% 100%)"}}>
+          <span className="bb" style={{fontSize:19,color:"#fff"}}>{p.initials}</span>
+        </div>
+        <span className="chip" style={{background:"rgba(200,16,46,.15)",color:"var(--red)"}}>Pro Experience</span>
+      </div>
+      <h3 className="bb" style={{fontSize:24,letterSpacing:1.5,marginBottom:4,lineHeight:1.1}}>{p.name}</h3>
+      <div style={{fontSize:11,color:p.accent,letterSpacing:1.5,textTransform:"uppercase",marginBottom:12}}>{p.hand}</div>
+      <div className="chip" style={{marginBottom:16}}>{p.bg}</div>
+      {!compact && <p style={{fontSize:14,lineHeight:1.75,color:"var(--ink2)",marginBottom:20,fontWeight:300}}>{p.bio}</p>}
+      <div style={{marginBottom:14}}>
+        <span className="bb" style={{fontSize:36,color:p.accent}}>{p.velo}</span>
+        <span style={{fontSize:13,color:"var(--ink3)",marginLeft:6}}>mph</span>
+      </div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:compact?0:20}}>
+        {p.pitches.map(x=><span key={x} className="chip">{x}</span>)}
+      </div>
+      {!compact && openBook && (
+        <button className="btn" style={{width:"100%",textAlign:"center",marginTop:20,fontSize:16}} onClick={e=>{e.stopPropagation();openBook();}}>Book Logan</button>
+      )}
+    </div>
+  );
+}
+
+/* ── ROSTER PAGE ──────────────────────────────────────────────── */
+function RosterPage({ openBook }) {
+  const ref = useFade();
+  return (
+    <div style={{paddingTop:100,minHeight:"100vh"}}>
+      <div ref={ref} className="fu" style={{maxWidth:600,margin:"0 auto",padding:"60px 40px"}}>
+        <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+        <h1 className="bb" style={{fontSize:72,letterSpacing:4,marginBottom:10}}>The Arm</h1>
+        <p style={{color:"var(--ink2)",fontSize:16,marginBottom:60,fontWeight:300}}>Professional experience. Real pitches. Real competition.</p>
+        {PITCHERS.map(p=><PCard key={p.id} p={p} openBook={openBook}/>)}
+      </div>
+      <Footer/>
+    </div>
+  );
+}
+
+/* ── HOW IT WORKS ─────────────────────────────────────────────── */
+function HowPage({ openBook }) {
+  const ref = useFade();
+  const steps = [
+    {n:"01",t:"Choose Your Session",   d:"Private ($200 · 60–75 pitches), Small Group ($85/hitter · 30–40 pitches each), or Team ($50/hitter · 15–20 pitches each, min $500)."},
+    {n:"02",t:"Pick Your Add-Ons",    d:"Stack on a Pitcher Debrief (+$75), Recruiting Video (+$200), HitTrax/Rapsodo (+$100) — or the Full Elite Bundle (+$325, saves $50)."},
+    {n:"03",t:"Pick Date & Time",     d:"See real availability. Pick your slot, fill in your info, and confirm."},
+    {n:"04",t:"Pay Securely",         d:"Stripe-powered checkout. Your card info is never stored on our servers. You'll get a confirmation email the moment payment goes through."},
+    {n:"05",t:"Show Up and Rake",     d:"Come ready. Logan comes ready. Everything else is handled. Just get in the box."},
+  ];
+  return (
+    <div style={{paddingTop:100,minHeight:"100vh"}}>
+      <div ref={ref} className="fu" style={{maxWidth:860,margin:"0 auto",padding:"60px 40px"}}>
+        <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+        <h1 className="bb" style={{fontSize:72,letterSpacing:4,marginBottom:10}}>How It Works</h1>
+        <p style={{color:"var(--ink2)",fontSize:16,marginBottom:64,fontWeight:300}}>Five steps between you and live reps against a professional arm.</p>
+        {steps.map((s,i)=>(
+          <div key={s.n} style={{display:"flex",gap:40,padding:"40px 0",borderBottom:i<steps.length-1?"1px solid var(--bdr)":"none",alignItems:"flex-start"}}>
+            <div className="bb" style={{fontSize:62,lineHeight:1,color:"transparent",WebkitTextStroke:"1px rgba(200,16,46,.35)",minWidth:72}}>{s.n}</div>
+            <div style={{paddingTop:10}}>
+              <h3 className="bb" style={{fontSize:28,letterSpacing:2,marginBottom:10}}>{s.t}</h3>
+              <p style={{fontSize:16,lineHeight:1.78,color:"var(--ink2)",fontWeight:300}}>{s.d}</p>
+            </div>
+          </div>
+        ))}
+        <div style={{textAlign:"center",marginTop:64}}>
+          <button className="btn" onClick={openBook} style={{fontSize:22}}>Book Your Session</button>
+        </div>
+      </div>
+      <Footer/>
+    </div>
+  );
+}
+
+/* ── PRICING PAGE ─────────────────────────────────────────────── */
+function PricingPage({ openBook }) {
+  const ref = useFade();
+  const examples = [
+    {l:"Private — base only",      d:"1 hitter, 60–75 pitches",               t:200},
+    {l:"Private + Debrief",        d:"1 hitter + pitcher breakdown",           t:275},
+    {l:"Private + Full Elite",     d:"1 hitter + all 3 add-ons bundled",       t:525},
+    {l:"Team (10) — base only",    d:"10 hitters, 15–20 pitches each",         t:500},
+    {l:"Team (10) + Debrief",      d:"10 hitters + post-session breakdown",    t:575},
+    {l:"Team (10) + Full Elite",   d:"10 hitters + full elite bundle",         t:825},
+  ];
+  return (
+    <div style={{paddingTop:100,minHeight:"100vh"}}>
+      <div ref={ref} className="fu" style={{maxWidth:1000,margin:"0 auto",padding:"60px 40px"}}>
+        <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+        <h1 className="bb" style={{fontSize:72,letterSpacing:4,marginBottom:10}}>Pricing</h1>
+        <p style={{color:"var(--ink2)",fontSize:16,marginBottom:64,fontWeight:300}}>Start with a base session. Stack add-ons where it counts.</p>
+        <h2 className="bb" style={{fontSize:32,letterSpacing:3,marginBottom:24}}>Base Sessions</h2>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:16,marginBottom:60}}>
+          {SESSIONS.map(s=>(
+            <div key={s.id} style={{background:"var(--bg2)",border:"1px solid var(--bdr)",padding:"32px 28px"}}>
+              <div className="bb" style={{fontSize:30,letterSpacing:2,marginBottom:6}}>{s.label}</div>
+              <div style={{fontSize:13,color:"var(--ink2)",marginBottom:24,fontWeight:300}}>{s.sub} · {s.desc}</div>
+              <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:s.id==="team"?8:0}}>
+                <span className="bb" style={{fontSize:54,color:"var(--red)"}}>{fmt(s.price)}</span>
+                <span style={{fontSize:13,color:"var(--ink3)"}}>{s.perLabel}</span>
+              </div>
+              {s.id==="team" && <div style={{fontSize:12,color:"var(--ink3)"}}>Minimum session charge: $500</div>}
+            </div>
+          ))}
+        </div>
+        <h2 className="bb" style={{fontSize:32,letterSpacing:3,marginBottom:8}}>Add-Ons</h2>
+        <p style={{fontSize:14,color:"var(--ink2)",marginBottom:24,fontWeight:300}}>Select any during booking — added to your session total.</p>
+        <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:60}}>
+          {ADDONS.map(a=>(
+            <div key={a.id} style={{background:"var(--bg2)",border:`1px solid ${a.bundle?"rgba(200,16,46,.35)":"var(--bdr)"}`,padding:"24px 28px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:20,flexWrap:"wrap"}}>
+              <div style={{display:"flex",gap:18,alignItems:"flex-start"}}>
+                <span style={{fontSize:26}}>{a.icon}</span>
+                <div>
+                  <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
+                    <span className="bb" style={{fontSize:22,letterSpacing:1.5}}>{a.label}</span>
+                    {a.bundle && <span className="chip" style={{background:"rgba(200,16,46,.2)",color:"var(--red)"}}>Saves $50</span>}
+                  </div>
+                  <p style={{fontSize:14,color:"var(--ink2)",fontWeight:300,maxWidth:480,lineHeight:1.65}}>{a.desc}</p>
+                </div>
+              </div>
+              <span className="bb" style={{fontSize:44,color:a.bundle?"var(--red)":"var(--ink)",whiteSpace:"nowrap"}}>{fmt(a.price)}</span>
+            </div>
+          ))}
+        </div>
+        <h2 className="bb" style={{fontSize:32,letterSpacing:3,marginBottom:24}}>Example Totals</h2>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:14,marginBottom:64}}>
+          {examples.map(e=>(
+            <div key={e.l} style={{background:"var(--bg2)",border:"1px solid var(--bdr)",padding:"24px"}}>
+              <div className="bb" style={{fontSize:18,letterSpacing:1.5,marginBottom:6}}>{e.l}</div>
+              <div style={{fontSize:13,color:"var(--ink2)",marginBottom:16,fontWeight:300}}>{e.d}</div>
+              <div className="bb" style={{fontSize:40,color:"var(--red)"}}>{fmt(e.t)}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{textAlign:"center"}}>
+          <button className="btn" onClick={openBook} style={{fontSize:22}}>Book a Session</button>
+        </div>
+      </div>
+      <Footer/>
+    </div>
+  );
+}
+
+/* ── BOOKING FLOW ─────────────────────────────────────────────── */
+function BookPage({ bk, setBk, go, freshBooking }) {
+  const set  = (k,v) => setBk(p=>({...p,[k]:v}));
+  const setF = (k,v) => setBk(p=>({...p,form:{...p.form,[k]:v}}));
+  const [loading, setLoading]   = useState(false);
+  const [error,   setError]     = useState("");
+  const STEPS = 6;
+
+  const canNext = () => {
+    if (bk.step===1) return !!bk.who;
+    if (bk.step===2) return !!bk.pitcher;
+    if (bk.step===3) return !!bk.session;
+    if (bk.step===4) return true;
+    if (bk.step===5) return !!bk.day && !!bk.time;
+    if (bk.step===6) return !!bk.form.name && !!bk.form.email && !!bk.form.phone;
+    return false;
+  };
+
+  const total = calcTotal(bk.session, bk.addons, bk.players);
+
+  const toggleAO = id => {
+    if (id==="elite") { set("addons", bk.addons.includes("elite")?[]:["elite"]); return; }
+    const f = bk.addons.filter(x=>x!=="elite");
+    set("addons", f.includes(id)?f.filter(x=>x!==id):[...f,id]);
+  };
+
+  // ── Stripe Checkout ──────────────────────────────────────────
+  const handlePayment = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const addonLabels = bk.addons.map(id => ADDONS.find(a=>a.id===id)?.label).join(", ") || "None";
+
+      // Step 1: Send booking details to Formspree — emails Logan immediately
+      const res = await fetch(FORMSPREE_BOOKING, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          name:       bk.form.name,
+          email:      bk.form.email,
+          phone:      bk.form.phone,
+          org:        bk.form.org || "N/A",
+          notes:      bk.form.notes || "N/A",
+          pitcher:    bk.pitcher ? bk.pitcher.name : "",
+          session:    bk.session ? bk.session.label : "",
+          addons:     addonLabels,
+          day:        bk.day,
+          time:       bk.time,
+          players:    bk.players,
+          total:      "$" + total,
+          bookerType: bk.who,
+          _subject:   "New ARMD Booking - " + bk.form.name + " - $" + total,
+        }),
+      });
+      if (!res.ok) throw new Error("Booking failed. Please try again.");
+
+      // Step 2: If Stripe is configured redirect to checkout, otherwise confirm directly
+      const stripeKey = window.ARMD_STRIPE_KEY;
+      const stripePrice = window.ARMD_STRIPE_PRICE;
+      const stripeReady = stripeKey && !stripeKey.includes("REPLACE") && stripePrice && !stripePrice.includes("REPLACE");
+
+      if (stripeReady) {
+        const stripe = await stripePromise;
+        const result = await stripe.redirectToCheckout({
+          lineItems: [{ price: stripePrice, quantity: 1 }],
+          mode: "payment",
+          successUrl: window.location.origin + "?booking=success",
+          cancelUrl:  window.location.origin + "?booking=cancelled",
+          customerEmail: bk.form.email,
+        });
+        if (result.error) throw new Error(result.error.message);
+      } else {
+        // Stripe pending — booking captured via Formspree, confirm immediately
+        set("done", true);
+        setLoading(false);
+      }
+    } catch (err) {
+      setError(err.message || "Something went wrong. Please try again.");
+      setLoading(false);
+    }
+  };
+
+  // Check for Stripe redirect return
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("booking") === "success") {
+      set("done", true);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
+  if (bk.done) return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"130px 40px 80px"}}>
+      <div style={{maxWidth:520,textAlign:"center"}}>
+        <div style={{fontSize:72,marginBottom:24}}>⚾</div>
+        <h1 className="bb" style={{fontSize:60,letterSpacing:4,color:"var(--red)",marginBottom:16}}>You're Booked.</h1>
+        <p style={{fontSize:16,color:"var(--ink2)",lineHeight:1.75,marginBottom:12,fontWeight:300}}>
+          A confirmation email is on its way. Logan will be in touch to confirm your slot.
+        </p>
+        <button className="btn" onClick={()=>go("home")} style={{fontSize:18,marginTop:32}}>Back to Home</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{paddingTop:100,minHeight:"100vh"}}>
+      <div style={{maxWidth:740,margin:"0 auto",padding:"60px 40px"}}>
+        <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+        <h1 className="bb" style={{fontSize:52,letterSpacing:3,marginBottom:40}}>Book a Session</h1>
+        <div className="sbar">{Array.from({length:STEPS}).map((_,i)=><div key={i} className={`sseg${i<bk.step?" on":""}`}/>)}</div>
+        <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"var(--ink3)",marginBottom:32}}>Step {bk.step} of {STEPS}</div>
+
+        {/* Step 1 — Who */}
+        {bk.step===1 && <StepWrap title="Who's Booking?" sub="Helps us set up the right session.">
+          <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+            {WHO.map(w=>(
+              <div key={w.id} className={`card${bk.who===w.id?" sel":""}`} style={{padding:"28px 22px",flex:1,minWidth:140,textAlign:"center"}} onClick={()=>set("who",w.id)}>
+                <div style={{fontSize:36,marginBottom:12}}>{w.icon}</div>
+                <div className="bb" style={{fontSize:22,letterSpacing:2,marginBottom:6}}>{w.label}</div>
+                <div style={{fontSize:13,color:"var(--ink2)",fontWeight:300}}>{w.sub}</div>
+              </div>
+            ))}
+          </div>
+        </StepWrap>}
+
+        {/* Step 2 — Pitcher */}
+        {bk.step===2 && <StepWrap title="Your Pitcher" sub="Professional experience. Real competition.">
+          {PITCHERS.map(p=>(
+            <div key={p.id} className={`card${bk.pitcher?.id===p.id?" sel":""}`} style={{padding:"22px 24px",display:"flex",gap:20,alignItems:"center",flexWrap:"wrap"}} onClick={()=>set("pitcher",p)}>
+              <div style={{width:50,height:50,minWidth:50,background:p.accent,display:"flex",alignItems:"center",justifyContent:"center",clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)"}}>
+                <span className="bb" style={{fontSize:16,color:"#fff"}}>{p.initials}</span>
+              </div>
+              <div style={{flex:1}}>
+                <div className="bb" style={{fontSize:22,letterSpacing:1,marginBottom:4}}>{p.name}</div>
+                <div style={{fontSize:12,color:"var(--ink2)"}}>{p.bg}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div className="bb" style={{fontSize:28,color:p.accent}}>{p.velo}</div>
+                <div style={{fontSize:11,color:"var(--ink3)",textTransform:"uppercase",letterSpacing:1}}>mph</div>
+              </div>
+            </div>
+          ))}
+        </StepWrap>}
+
+        {/* Step 3 — Session */}
+        {bk.step===3 && <StepWrap title="Session Type" sub="Choose based on how many hitters you're bringing.">
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {SESSIONS.map(s=>(
+              <div key={s.id} className={`card${bk.session?.id===s.id?" sel":""}`} style={{padding:"22px 26px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,flexWrap:"wrap"}} onClick={()=>set("session",s)}>
+                <div>
+                  <div className="bb" style={{fontSize:26,letterSpacing:2,marginBottom:4}}>{s.label}</div>
+                  <div style={{fontSize:13,color:"var(--ink2)",fontWeight:300}}>{s.sub} · {s.desc}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div className="bb" style={{fontSize:40,color:"var(--red)"}}>{fmt(s.price)}</div>
+                  <div style={{fontSize:12,color:"var(--ink3)"}}>{s.perLabel}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {bk.session?.id==="team" && (
+            <div style={{marginTop:16}}>
+              <label className="fl">Number of Hitters</label>
+              <input className="fi" type="number" min={1} max={12} value={bk.players} onChange={e=>set("players",e.target.value)} style={{maxWidth:160}}/>
+              <div style={{fontSize:13,color:"var(--ink3)",marginTop:8}}>
+                Estimated total: <strong style={{color:"var(--red)"}}>{fmt(Math.max(500,parseInt(bk.players||1)*50))}</strong> <span>(minimum $500)</span>
+              </div>
+            </div>
+          )}
+        </StepWrap>}
+
+        {/* Step 4 — Add-Ons */}
+        {bk.step===4 && <StepWrap title="Add-Ons" sub="Optional — stack any combination, or grab the Elite Bundle and save $50.">
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:24}}>
+            {ADDONS.map(a=>{
+              const on  = bk.addons.includes(a.id);
+              const dis = a.id!=="elite" && bk.addons.includes("elite");
+              return (
+                <div key={a.id} className={`ao${on?" sel":""}`} style={{opacity:dis?.38:1,pointerEvents:dis?"none":"auto",border:a.bundle?"1px solid rgba(200,16,46,.32)":"1px solid var(--bdr)"}} onClick={()=>!dis&&toggleAO(a.id)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:16}}>
+                    <div style={{display:"flex",gap:16,alignItems:"flex-start",flex:1}}>
+                      <div className="aocheck">{on&&<span style={{color:"#fff",fontSize:13,fontWeight:700}}>✓</span>}</div>
+                      <div>
+                        <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
+                          <span style={{fontSize:22}}>{a.icon}</span>
+                          <span className="bb" style={{fontSize:20,letterSpacing:1.5}}>{a.label}</span>
+                          {a.bundle&&<span className="chip" style={{background:"rgba(200,16,46,.2)",color:"var(--red)"}}>Saves $50</span>}
+                        </div>
+                        <p style={{fontSize:13,color:"var(--ink2)",fontWeight:300,lineHeight:1.65}}>{a.desc}</p>
+                      </div>
+                    </div>
+                    <div className="bb" style={{fontSize:32,color:on?"var(--red)":"var(--ink)",whiteSpace:"nowrap"}}>{fmt(a.price)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {bk.session && (
+            <div className="sbox">
+              <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"var(--ink3)",marginBottom:8}}>Running Total</div>
+              <div className="bb" style={{fontSize:48,color:"var(--red)"}}>{fmt(calcTotal(bk.session,bk.addons,bk.players))}</div>
+            </div>
+          )}
+        </StepWrap>}
+
+        {/* Step 5 — Date & Time */}
+        {bk.step===5 && <StepWrap title="Date & Time" sub="Select your preferred day and time.">
+          <div style={{marginBottom:28}}>
+            <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"var(--ink3)",marginBottom:12}}>Select a Day</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {DAYS.map(d=><button key={d} className={`dchip${bk.day===d?" sel":""}`} onClick={()=>set("day",d)}>{d}</button>)}
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"var(--ink3)",marginBottom:12}}>Select a Time</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {TIMES.map(t=><button key={t} className={`tchip${bk.time===t?" sel":""}`} onClick={()=>set("time",t)}>{t}</button>)}
+            </div>
+          </div>
+        </StepWrap>}
+
+        {/* Step 6 — Info & Pay */}
+        {bk.step===6 && <StepWrap title="Your Info & Payment" sub="Secure checkout powered by Stripe. We never store your card details.">
+          <div className="sbox" style={{marginBottom:28}}>
+            <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"var(--ink3)",marginBottom:12}}>Order Summary</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:bk.addons.length?10:0}}>
+              <div>
+                <div className="bb" style={{fontSize:20,letterSpacing:1,marginBottom:4}}>{bk.pitcher?.name} · {bk.session?.label}</div>
+                <div style={{fontSize:13,color:"var(--ink2)"}}>{bk.day} at {bk.time}</div>
+              </div>
+              <div className="bb" style={{fontSize:40,color:"var(--red)"}}>{fmt(total)}</div>
+            </div>
+            {bk.addons.length>0 && <div style={{fontSize:12,color:"var(--ink3)"}}>Add-ons: {bk.addons.map(id=>ADDONS.find(a=>a.id===id)?.label).join(" · ")}</div>}
+          </div>
+
+          {error && <div className="alert alert-err">{error}</div>}
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+            <div><label className="fl">Full Name *</label><input className="fi" placeholder="Jane Smith" value={bk.form.name} onChange={e=>setF("name",e.target.value)}/></div>
+            <div><label className="fl">Phone *</label><input className="fi" placeholder="(555) 000-0000" value={bk.form.phone} onChange={e=>setF("phone",e.target.value)}/></div>
+          </div>
+          <div style={{marginBottom:12}}><label className="fl">Email * (confirmation sent here)</label><input className="fi" placeholder="you@example.com" value={bk.form.email} onChange={e=>setF("email",e.target.value)}/></div>
+          <div style={{marginBottom:12}}><label className="fl">Team / Organization (optional)</label><input className="fi" placeholder="Elite Travel Ball 16U" value={bk.form.org} onChange={e=>setF("org",e.target.value)}/></div>
+          <div style={{marginBottom:28}}><label className="fl">Notes (optional)</label><textarea className="fi" rows={3} style={{resize:"vertical"}} placeholder="Age group, skill level, anything we should know..." value={bk.form.notes} onChange={e=>setF("notes",e.target.value)}/></div>
+
+          <div style={{background:"var(--bg3)",border:"1px solid var(--bdr)",padding:"16px 20px",marginBottom:24,display:"flex",gap:12,alignItems:"center"}}>
+            <span style={{fontSize:22}}>🔒</span>
+            <div style={{fontSize:13,color:"var(--ink2)",fontWeight:300}}>
+              Payment is processed securely by <strong style={{color:"var(--ink)"}}>Stripe</strong>. You'll be redirected to complete checkout. Your card is never stored on our servers.
+            </div>
+          </div>
+        </StepWrap>}
+
+        {/* Nav Buttons */}
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:48,gap:16}}>
+          {bk.step>1
+            ? <button className="btng" onClick={()=>set("step",bk.step-1)}>← Back</button>
+            : <div/>
+          }
+          {bk.step<STEPS
+            ? <button className="btn" onClick={()=>set("step",bk.step+1)} disabled={!canNext()} style={{fontSize:18}}>Continue →</button>
+            : <button className="btn" onClick={handlePayment} disabled={!canNext()||loading} style={{fontSize:18,minWidth:200}}>
+                {loading ? <><span className="spinner"/>Processing...</> : `Pay ${fmt(total)} →`}
+              </button>
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StepWrap({ title, sub, children }) {
+  return (
+    <div>
+      <h2 className="bb" style={{fontSize:36,letterSpacing:2,marginBottom:6}}>{title}</h2>
+      <p style={{color:"var(--ink2)",marginBottom:32,fontSize:15,fontWeight:300}}>{sub}</p>
+      {children}
+    </div>
+  );
+}
+
+/* ── JOIN AS PITCHER ──────────────────────────────────────────── */
+function JoinPage({ go }) {
+  const ref = useFade();
+  const DAYS_LIST = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  const [form, setForm] = useState({name:"",email:"",phone:"",hand:"",velo:"",pitches:"",level:"",orgs:"",video:"",refs:"",avail:[],notes:""});
+  const [status,    setStatus]    = useState("idle"); // idle | loading | success | error
+  const [errMsg,    setErrMsg]    = useState("");
+  const setF = (k,v) => setForm(p=>({...p,[k]:v}));
+  const toggleDay = d => setF("avail", form.avail.includes(d)?form.avail.filter(x=>x!==d):[...form.avail,d]);
+  const canSubmit = form.name && form.email && form.phone && form.hand && form.velo && form.level;
+
+  const handleSubmit = async () => {
+    setStatus("loading");
+    setErrMsg("");
+    try {
+      const res = await fetch(FORMSPREE_PITCHER, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          ...form,
+          avail: form.avail.join(", ") || "Not specified",
+          _subject: `ARM'D Pitcher Application — ${form.name} — ${form.level}`,
+        }),
+      });
+      if (!res.ok) throw new Error("Submission failed. Please try again.");
+      setStatus("success");
+    } catch (err) {
+      setErrMsg(err.message);
+      setStatus("error");
+    }
+  };
+
+  if (status==="success") return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"130px 40px 80px"}}>
+      <div style={{maxWidth:520,textAlign:"center"}}>
+        <div style={{fontSize:72,marginBottom:24}}>⚾</div>
+        <h1 className="bb" style={{fontSize:60,letterSpacing:4,color:"var(--red)",marginBottom:16}}>Application Sent.</h1>
+        <p style={{fontSize:16,color:"var(--ink2)",lineHeight:1.75,marginBottom:40,fontWeight:300}}>
+          We'll review your application and reach out to <strong style={{color:"var(--ink)"}}>{form.email}</strong> within 48 hours.
+        </p>
+        <button className="btn" onClick={()=>go("home")} style={{fontSize:18}}>Back to Home</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{paddingTop:100,minHeight:"100vh"}}>
+      <div ref={ref} className="fu" style={{maxWidth:760,margin:"0 auto",padding:"60px 40px"}}>
+        <div style={{width:36,height:3,background:"var(--red)",marginBottom:18}}/>
+        <h1 className="bb" style={{fontSize:72,letterSpacing:4,marginBottom:10}}>Join ARM'D</h1>
+        <p style={{color:"var(--ink2)",fontSize:16,marginBottom:10,fontWeight:300}}>
+          Building a roster of elite arms — ex-college and pro pitchers who want to compete, develop hitters, and get paid doing it.
+        </p>
+        <p style={{color:"var(--ink2)",fontSize:15,marginBottom:48,fontWeight:300}}>Fill out the form below and we'll be in touch within 48 hours.</p>
+
+        {status==="error" && <div className="alert alert-err">{errMsg}</div>}
+
+        <SLabel>Personal Info</SLabel>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+          <div><label className="fl">Full Name *</label><input className="fi" placeholder="John Smith" value={form.name} onChange={e=>setF("name",e.target.value)}/></div>
+          <div><label className="fl">Phone *</label><input className="fi" placeholder="(555) 000-0000" value={form.phone} onChange={e=>setF("phone",e.target.value)}/></div>
+        </div>
+        <div style={{marginBottom:28}}><label className="fl">Email *</label><input className="fi" placeholder="you@example.com" value={form.email} onChange={e=>setF("email",e.target.value)}/></div>
+
+        <SLabel>Pitching Profile</SLabel>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+          <div>
+            <label className="fl">Throwing Hand *</label>
+            <select className="fi" value={form.hand} onChange={e=>setF("hand",e.target.value)} style={{cursor:"pointer",appearance:"auto"}}>
+              <option value="">Select...</option>
+              <option value="RHP">RHP — Right-Handed</option>
+              <option value="LHP">LHP — Left-Handed</option>
+            </select>
+          </div>
+          <div><label className="fl">Velocity Range *</label><input className="fi" placeholder="88–94 mph" value={form.velo} onChange={e=>setF("velo",e.target.value)}/></div>
+        </div>
+        <div style={{marginBottom:28}}><label className="fl">Pitch Arsenal</label><input className="fi" placeholder="Fastball, Slider, Changeup..." value={form.pitches} onChange={e=>setF("pitches",e.target.value)}/></div>
+
+        <SLabel>Experience</SLabel>
+        <div style={{marginBottom:12}}>
+          <label className="fl">Highest Level Played *</label>
+          <select className="fi" value={form.level} onChange={e=>setF("level",e.target.value)} style={{cursor:"pointer",appearance:"auto"}}>
+            <option value="">Select...</option>
+            <option value="HS">High School</option>
+            <option value="JUCO">JUCO</option>
+            <option value="D3">Division III</option>
+            <option value="D2">Division II</option>
+            <option value="D1">Division I</option>
+            <option value="Indy">Independent Pro</option>
+            <option value="MiLB">Minor League (MiLB)</option>
+            <option value="MLB">MLB</option>
+          </select>
+        </div>
+        <div style={{marginBottom:28}}><label className="fl">Teams / Organizations</label><input className="fi" placeholder="University of Florida, Twins org, Atlantic League..." value={form.orgs} onChange={e=>setF("orgs",e.target.value)}/></div>
+
+        <SLabel>Availability</SLabel>
+        <p style={{fontSize:13,color:"var(--ink2)",marginBottom:14,fontWeight:300}}>Select all days you're generally available to throw.</p>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:28}}>
+          {DAYS_LIST.map(d=><button key={d} className={"dchip"+(form.avail.includes(d)?" sel":"")} onClick={()=>toggleDay(d)}>{d}</button>)}
+        </div>
+
+        <SLabel>Video & References</SLabel>
+        <div style={{marginBottom:12}}><label className="fl">Pitching Video Link (YouTube, Hudl, etc.)</label><input className="fi" placeholder="https://..." value={form.video} onChange={e=>setF("video",e.target.value)}/></div>
+        <div style={{marginBottom:28}}><label className="fl">References (name + contact)</label><textarea className="fi" rows={3} style={{resize:"vertical"}} placeholder="Coach Mike Johnson — (555) 123-4567" value={form.refs} onChange={e=>setF("refs",e.target.value)}/></div>
+
+        <SLabel>Anything Else</SLabel>
+        <div style={{marginBottom:40}}><textarea className="fi" rows={3} style={{resize:"vertical"}} placeholder="Injury history, location, why you want to join ARM'D..." value={form.notes} onChange={e=>setF("notes",e.target.value)}/></div>
+
+        <button className="btn" style={{fontSize:20,width:"100%",textAlign:"center",padding:"18px",clipPath:"none"}} disabled={!canSubmit||status==="loading"} onClick={handleSubmit}>
+          {status==="loading" ? <><span className="spinner"/>Submitting...</> : "Submit Application"}
+        </button>
+        {!canSubmit && <p style={{fontSize:12,color:"var(--ink3)",textAlign:"center",marginTop:12}}>Complete all required fields (*) to submit.</p>}
+      </div>
+      <Footer/>
+    </div>
+  );
+}
+
+function SLabel({ children }) {
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:20}}>
+      <div style={{width:24,height:2,background:"var(--red)"}}/>
+      <span className="bb" style={{fontSize:18,letterSpacing:2,color:"var(--ink2)"}}>{children}</span>
+      <div style={{flex:1,height:1,background:"var(--bdr)"}}/>
+    </div>
+  );
+}
+
+/* ── FOOTER ───────────────────────────────────────────────────── */
+function Footer() {
+  return (
+    <footer style={{borderTop:"1px solid var(--bdr)",padding:"48px 40px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:24,marginTop:40}}>
+      <div>
+        <div className="bb" style={{fontSize:28,letterSpacing:3,marginBottom:4}}>ARM'D</div>
+        <div style={{fontSize:11,color:"var(--ink3)",letterSpacing:1}}>Live Pitching · On Demand</div>
+      </div>
+      <div style={{fontSize:12,color:"var(--ink3)"}}>&copy; 2025 ARM'D. All rights reserved.</div>
+    </footer>
+  );
+}
+
+
+    /* ── MOUNT ── */
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(React.createElement(App));
+  </script>
+</body>
 </html>
